@@ -28,6 +28,8 @@
       const urlFilter = urlParams.get('filter');
       // Use URL leafId if provided, otherwise fall back to session default
       const leafId = urlLeafId || defaultLeafId;
+      // Track current target for URL state persistence
+      let currentTargetId = urlTargetId;
 
       // ============================================================
       // DATA STRUCTURES
@@ -1113,7 +1115,7 @@
       const entryCache = new Map();
 
       /**
-       * Update URL with current leaf selection and filter mode for sharing.
+       * Update URL with current leaf selection, filter mode, and target for sharing.
        * Only updates in direct browser context, not in iframe.
        */
       function updateUrlState() {
@@ -1127,6 +1129,15 @@
         params.set('leafId', currentLeafId);
         if (filterMode !== 'default') {
           params.set('filter', filterMode);
+        }
+        // Preserve targetId if it's on the current path
+        if (currentTargetId && byId.has(currentTargetId)) {
+          const pathIds = buildActivePathIds(currentLeafId);
+          if (pathIds.has(currentTargetId)) {
+            params.set('targetId', currentTargetId);
+          } else {
+            currentTargetId = null; // Clear if not on path
+          }
         }
 
         url.search = gistId ? `?${gistId}&${params.toString()}` : `?${params.toString()}`;
@@ -1156,6 +1167,8 @@
 
       function navigateTo(targetId, scrollMode = 'target', scrollToEntryId = null) {
         currentLeafId = targetId;
+        // Always sync targetId: use explicit scroll target, or the navigated entry
+        currentTargetId = scrollToEntryId || targetId;
         updateUrlState();
         const path = getPath(targetId);
 
