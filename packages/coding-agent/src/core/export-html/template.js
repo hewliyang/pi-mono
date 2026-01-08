@@ -25,6 +25,7 @@
       const urlParams = new URLSearchParams(searchString);
       const urlLeafId = urlParams.get('leafId');
       const urlTargetId = urlParams.get('targetId');
+      const urlFilter = urlParams.get('filter');
       // Use URL leafId if provided, otherwise fall back to session default
       const leafId = urlLeafId || defaultLeafId;
 
@@ -258,7 +259,8 @@
       // FILTERING (pure data)
       // ============================================================
 
-      let filterMode = 'default';
+      const validFilters = ['default', 'no-tools', 'user-only', 'labeled-only', 'all'];
+      let filterMode = urlFilter && validFilters.includes(urlFilter) ? urlFilter : 'default';
       let searchQuery = '';
 
       function hasTextContent(content) {
@@ -1110,6 +1112,27 @@
       // Cache for rendered entry DOM nodes
       const entryCache = new Map();
 
+      /**
+       * Update URL with current leaf selection and filter mode for sharing.
+       * Only updates in direct browser context, not in iframe.
+       */
+      function updateUrlState() {
+        if (injectedParams) return;
+
+        const url = new URL(window.location.href);
+        // Find the gist ID (first query param without value, e.g., ?abc123)
+        const gistId = Array.from(url.searchParams.keys()).find(k => !url.searchParams.get(k));
+
+        const params = new URLSearchParams();
+        params.set('leafId', currentLeafId);
+        if (filterMode !== 'default') {
+          params.set('filter', filterMode);
+        }
+
+        url.search = gistId ? `?${gistId}&${params.toString()}` : `?${params.toString()}`;
+        window.history.replaceState({}, '', url.toString());
+      }
+
       function renderEntryToNode(entry) {
         // Check cache first
         if (entryCache.has(entry.id)) {
@@ -1133,6 +1156,7 @@
 
       function navigateTo(targetId, scrollMode = 'target', scrollToEntryId = null) {
         currentLeafId = targetId;
+        updateUrlState();
         const path = getPath(targetId);
 
         renderTree();
@@ -1165,9 +1189,8 @@
 
         // Use setTimeout(0) to ensure DOM is fully laid out before scrolling
         setTimeout(() => {
-          const content = document.getElementById('content');
           if (scrollMode === 'bottom') {
-            content.scrollTop = content.scrollHeight;
+            window.scrollTo(0, document.body.scrollHeight);
           } else if (scrollMode === 'target') {
             // If scrollToEntryId is provided, scroll to that specific entry
             const scrollTargetId = scrollToEntryId || targetId;
@@ -1244,10 +1267,16 @@
 
       // Filter buttons
       document.querySelectorAll('.filter-btn').forEach(btn => {
+        // Set initial active state from URL param
+        if (btn.dataset.filter === filterMode) {
+          document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+        }
         btn.addEventListener('click', () => {
           document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
           btn.classList.add('active');
           filterMode = btn.dataset.filter;
+          updateUrlState();
           forceTreeRerender();
         });
       });
@@ -1314,12 +1343,17 @@
       });
 
       // Initial render
-      // If URL has targetId, scroll to that specific message; otherwise stay at top
+      // If URL has leafId param, scroll to bottom to show the branch content
+      // If URL has targetId, scroll to that specific message
       if (leafId) {
         if (urlTargetId && byId.has(urlTargetId)) {
           // Deep link: navigate to leaf and scroll to target message
           navigateTo(leafId, 'target', urlTargetId);
+        } else if (urlLeafId) {
+          // Shared link with specific branch: scroll to bottom
+          navigateTo(leafId, 'bottom');
         } else {
+          // Default session load: stay at top
           navigateTo(leafId, 'none');
         }
       } else if (entries.length > 0) {

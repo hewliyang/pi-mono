@@ -5,6 +5,7 @@
 ### Added
 
 - `--no-tools` flag to disable all built-in tools, allowing extension-only tool setups ([#555](https://github.com/badlogic/pi-mono/issues/555))
+- HTML export: URL state now persists tree selection (`leafId`) and filter mode (`filter`), enabling shareable links to specific branches with display settings
 
 ## [0.38.0] - 2026-01-08
 
