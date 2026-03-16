@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed parallel tool execution so queued steering messages wait for the full in-flight tool batch to finish before the next user message is injected.
+
 ## [0.58.3] - 2026-03-15
 
 ## [0.58.2] - 2026-03-15

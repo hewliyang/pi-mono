@@ -419,11 +419,9 @@ async function executeToolCallsParallel(
 	emit: AgentEventSink,
 ): Promise<{ toolResults: ToolResultMessage[]; steeringMessages?: AgentMessage[] }> {
 	const results: ToolResultMessage[] = [];
-	const runnableCalls: PreparedToolCall[] = [];
-	let steeringMessages: AgentMessage[] | undefined;
+	const executions: ParallelToolCallExecution[] = [];
 
-	for (let index = 0; index < toolCalls.length; index++) {
-		const toolCall = toolCalls[index];
+	for (const toolCall of toolCalls) {
 		await emit({
 			type: "tool_execution_start",
 			toolCallId: toolCall.id,
@@ -433,39 +431,33 @@ async function executeToolCallsParallel(
 
 		const preparation = await prepareToolCall(currentContext, assistantMessage, toolCall, config, signal);
 		if (preparation.kind === "immediate") {
-			results.push(await emitToolCallOutcome(toolCall, preparation.result, preparation.isError, emit));
+			executions.push({
+				kind: "immediate",
+				toolCall,
+				result: preparation.result,
+				isError: preparation.isError,
+			});
 		} else {
-			runnableCalls.push(preparation);
-		}
-
-		if (config.getSteeringMessages) {
-			const steering = await config.getSteeringMessages();
-			if (steering.length > 0) {
-				steeringMessages = steering;
-				for (const runnable of runnableCalls) {
-					results.push(await skipToolCall(runnable.toolCall, emit, { emitStart: false }));
-				}
-				const remainingCalls = toolCalls.slice(index + 1);
-				for (const skipped of remainingCalls) {
-					results.push(await skipToolCall(skipped, emit));
-				}
-				return { toolResults: results, steeringMessages };
-			}
+			executions.push({
+				kind: "running",
+				prepared: preparation,
+				execution: executePreparedToolCall(preparation, signal, emit),
+			});
 		}
 	}
 
-	const runningCalls = runnableCalls.map((prepared) => ({
-		prepared,
-		execution: executePreparedToolCall(prepared, signal, emit),
-	}));
+	for (const execution of executions) {
+		if (execution.kind === "immediate") {
+			results.push(await emitToolCallOutcome(execution.toolCall, execution.result, execution.isError, emit));
+			continue;
+		}
 
-	for (const running of runningCalls) {
-		const executed = await running.execution;
+		const executed = await execution.execution;
 		results.push(
 			await finalizeExecutedToolCall(
 				currentContext,
 				assistantMessage,
-				running.prepared,
+				execution.prepared,
 				executed,
 				config,
 				signal,
@@ -474,7 +466,8 @@ async function executeToolCallsParallel(
 		);
 	}
 
-	if (!steeringMessages && config.getSteeringMessages) {
+	let steeringMessages: AgentMessage[] | undefined;
+	if (config.getSteeringMessages) {
 		const steering = await config.getSteeringMessages();
 		if (steering.length > 0) {
 			steeringMessages = steering;
@@ -501,6 +494,10 @@ type ExecutedToolCallOutcome = {
 	result: AgentToolResult<any>;
 	isError: boolean;
 };
+
+type ParallelToolCallExecution =
+	| { kind: "immediate"; toolCall: AgentToolCall; result: AgentToolResult<any>; isError: boolean }
+	| { kind: "running"; prepared: PreparedToolCall; execution: Promise<ExecutedToolCallOutcome> };
 
 async function prepareToolCall(
 	currentContext: AgentContext,

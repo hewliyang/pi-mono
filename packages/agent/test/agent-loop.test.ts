@@ -388,6 +388,105 @@ describe("agentLoop with AgentMessage", () => {
 		expect(toolResultIds).toEqual(["tool-1", "tool-2"]);
 	});
 
+	it("should finish the full parallel tool batch before injecting steering messages", async () => {
+		const toolSchema = Type.Object({ value: Type.String() });
+		const executed: string[] = [];
+		const queuedUserMessage: AgentMessage = createUserMessage("test");
+		let queuedDelivered = false;
+		let sawQueuedMessageInContext = false;
+		let releaseBatch: (() => void) | undefined;
+		const batchDone = new Promise<void>((resolve) => {
+			releaseBatch = resolve;
+		});
+
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			async execute(_toolCallId, params) {
+				executed.push(params.value);
+				await batchDone;
+				return {
+					content: [{ type: "text", text: `ok:${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [tool],
+		};
+
+		const userPrompt: AgentMessage = createUserMessage("run echo");
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			toolExecution: "parallel",
+			getSteeringMessages: async () => {
+				if (executed.length > 0 && !queuedDelivered) {
+					queuedDelivered = true;
+					return [queuedUserMessage];
+				}
+				return [];
+			},
+		};
+
+		let callIndex = 0;
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([userPrompt], context, config, undefined, (_model, ctx, _options) => {
+			if (callIndex === 1) {
+				sawQueuedMessageInContext = ctx.messages.some(
+					(m) => m.role === "user" && typeof m.content === "string" && m.content === "test",
+				);
+			}
+
+			const mockStream = new MockAssistantStream();
+			queueMicrotask(() => {
+				if (callIndex === 0) {
+					const message = createAssistantMessage(
+						[
+							{ type: "toolCall", id: "tool-1", name: "echo", arguments: { value: "first" } },
+							{ type: "toolCall", id: "tool-2", name: "echo", arguments: { value: "second" } },
+							{ type: "toolCall", id: "tool-3", name: "echo", arguments: { value: "third" } },
+						],
+						"toolUse",
+					);
+					mockStream.push({ type: "done", reason: "toolUse", message });
+					setTimeout(() => releaseBatch?.(), 20);
+				} else {
+					const message = createAssistantMessage([{ type: "text", text: "done" }]);
+					mockStream.push({ type: "done", reason: "stop", message });
+				}
+				callIndex++;
+			});
+			return mockStream;
+		});
+
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		const toolEnds = events.filter(
+			(e): e is Extract<AgentEvent, { type: "tool_execution_end" }> => e.type === "tool_execution_end",
+		);
+		const queuedMessageEvent = events.find(
+			(e) =>
+				e.type === "message_start" &&
+				e.message.role === "user" &&
+				typeof e.message.content === "string" &&
+				e.message.content === "test",
+		);
+
+		expect(executed).toEqual(["first", "second", "third"]);
+		expect(toolEnds).toHaveLength(3);
+		expect(toolEnds.every((event) => !event.isError)).toBe(true);
+		expect(queuedMessageEvent).toBeDefined();
+		expect(sawQueuedMessageInContext).toBe(true);
+	});
+
 	it("should inject queued messages and skip remaining tool calls", async () => {
 		const toolSchema = Type.Object({ value: Type.String() });
 		const executed: string[] = [];
